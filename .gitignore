@@ -1,0 +1,19 @@
+node_modules/
+.next/
+.turbo/
+dist/
+data/
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
+.env
+.env.local
+.env.development.local
+
+### JetBrains IDEs ###
+.idea/
+*.iml
+*.iws
+*.ipr
+out/

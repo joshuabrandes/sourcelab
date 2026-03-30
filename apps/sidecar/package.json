@@ -1,0 +1,6 @@
+{
+  "name": "@sourcelab/sidecar",
+  "scripts": {
+    "dev": "make dev"
+  }
+}
