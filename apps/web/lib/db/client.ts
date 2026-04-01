@@ -6,7 +6,7 @@ import path from "node:path";
 
 const DB_PATH = path.join(process.cwd(), "../../data/sourcelab.db");
 
-export const EMBEDDING_DIM = 768; // nomic-embed-text default
+export const EMBEDDING_DIM = 2560; // qwen3-embedding:4b default output size
 
 const sqlite = new Database(DB_PATH);
 
