@@ -17,3 +17,9 @@ __pycache__/
 *.iws
 *.ipr
 out/
+
+### Project and AI ##
+PROJECT_PLAN.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
