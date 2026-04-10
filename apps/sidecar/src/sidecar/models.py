@@ -41,6 +41,8 @@ class DocumentMetadata(BaseModel):
 
     author: str | None = None
     pageCount: int | None = Field(default=None, ge=1)
+    imageWidth: int | None = Field(default=None, ge=1)
+    imageHeight: int | None = Field(default=None, ge=1)
     language: str | None = None
     createdAt: str | None = None
     extractedAt: str | None = None
