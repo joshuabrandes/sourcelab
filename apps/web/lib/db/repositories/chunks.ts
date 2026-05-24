@@ -22,8 +22,8 @@ export function insertChunks(data: NewChunk[]): Chunk[] {
     if (data.length === 0) return [];
 
     const rows = data.map((chunk) => ({ ...chunk, id: crypto.randomUUID() }));
-    return db.transaction(() =>
-        rows.map((row) => db.insert(chunks).values(row).returning().get()),
+    return db.transaction((tx) =>
+        rows.map((row) => tx.insert(chunks).values(row).returning().get()),
     );
 }
 

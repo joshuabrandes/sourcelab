@@ -46,6 +46,26 @@ export interface ExtractedDocument {
     elements: DocumentElement[];
 }
 
+export interface ChunkableDocumentElement extends DocumentElement {
+    id: string;
+}
+
+export interface DocumentChunk {
+    sourceId: string;
+    content: string;
+    tokenCount: number;
+    startElement: string;
+    endElement: string;
+    headingContext?: string | null;
+    page?: number | null;
+    position: number;
+}
+
+export interface ChunkResponse {
+    sourceId: string;
+    chunks: DocumentChunk[];
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
@@ -86,6 +106,10 @@ export function isDocumentElement(value: unknown): value is DocumentElement {
     return value.metadata === undefined || isStringRecord(value.metadata);
 }
 
+export function isChunkableDocumentElement(value: unknown): value is ChunkableDocumentElement {
+    return isObject(value) && isDocumentElement(value) && typeof value.id === "string";
+}
+
 export function isExtractedDocument(value: unknown): value is ExtractedDocument {
     if (!isObject(value)) {
         return false;
@@ -123,9 +147,52 @@ export function isExtractedDocument(value: unknown): value is ExtractedDocument 
     return value.elements.every(isDocumentElement);
 }
 
+export function isDocumentChunk(value: unknown): value is DocumentChunk {
+    if (!isObject(value)) {
+        return false;
+    }
+
+    if (
+        typeof value.sourceId !== "string" ||
+        typeof value.content !== "string" ||
+        typeof value.tokenCount !== "number" ||
+        typeof value.startElement !== "string" ||
+        typeof value.endElement !== "string" ||
+        typeof value.position !== "number"
+    ) {
+        return false;
+    }
+
+    if (value.headingContext !== undefined && value.headingContext !== null && typeof value.headingContext !== "string") {
+        return false;
+    }
+
+    return value.page === undefined || value.page === null || typeof value.page === "number";
+}
+
+export function isChunkResponse(value: unknown): value is ChunkResponse {
+    if (!isObject(value)) {
+        return false;
+    }
+
+    return (
+        typeof value.sourceId === "string" &&
+        Array.isArray(value.chunks) &&
+        value.chunks.every(isDocumentChunk)
+    );
+}
+
 export function parseExtractedDocument(value: unknown): ExtractedDocument {
     if (!isExtractedDocument(value)) {
         throw new Error("Invalid ExtractedDocument payload");
+    }
+
+    return value;
+}
+
+export function parseChunkResponse(value: unknown): ChunkResponse {
+    if (!isChunkResponse(value)) {
+        throw new Error("Invalid ChunkResponse payload");
     }
 
     return value;

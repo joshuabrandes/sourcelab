@@ -9,15 +9,13 @@ export function findElementsBySource(sourceId: string): Element[] {
     return db.select().from(elements).where(eq(elements.sourceId, sourceId)).all();
 }
 
-export function insertElements(data: NewElement[]): void {
-    if (data.length === 0) return;
+export function insertElements(data: NewElement[]): Element[] {
+    if (data.length === 0) return [];
 
     const rows = data.map((el) => ({ ...el, id: crypto.randomUUID() }));
-    db.transaction(() => {
-        for (const row of rows) {
-            db.insert(elements).values(row).run();
-        }
-    });
+    return db.transaction((tx) =>
+        rows.map((row) => tx.insert(elements).values(row).returning().get()),
+    );
 }
 
 export function deleteElementsBySource(sourceId: string): void {
