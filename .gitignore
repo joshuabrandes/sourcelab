@@ -19,6 +19,7 @@ __pycache__/
 out/
 
 ### Project and AI ##
+.pnpm-store
 PROJECT_PLAN.md
 AGENTS.md
 CLAUDE.md
