@@ -1,76 +1,83 @@
-import re
-from datetime import datetime, UTC
+import logging
 from pathlib import Path
 
 import fitz
+from bs4 import BeautifulSoup
+from markdownify import markdownify
+from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from marker.output import json_to_html
+from marker.renderers.json import JSONBlockOutput, JSONOutput
 
-from sidecar.models import ContentType, ExtractedDocument, DocumentElement, ElementType, DocumentMetadata
+from sidecar.extractors.utils import markdown_to_elements, utc_timestamp
+from sidecar.models import ContentType, DocumentElement, DocumentMetadata, ElementType, ExtractedDocument
 
-SUPPORTED_TEXT_EXTENSIONS = {
-    ".pdf": ContentType.pdf
+SUPPORTED_EXTENSIONS = {".pdf": ContentType.pdf}
+
+_logger = logging.getLogger(__name__)
+_model_dict: dict | None = None
+
+_SKIPPED_MARKER_BLOCK_TYPES = {"PageHeader", "PageFooter"}
+_MARKER_ELEMENT_TYPES = {
+    "SectionHeader": ElementType.heading,
+    "Table": ElementType.table,
+    "TableGroup": ElementType.table,
+    "Form": ElementType.table,
+    "Code": ElementType.code,
+    "ListGroup": ElementType.list,
+    "ListItem": ElementType.list,
+    "Picture": ElementType.image,
+    "PictureGroup": ElementType.image,
+    "Figure": ElementType.image,
+    "FigureGroup": ElementType.image,
 }
 
 
 def extract_pdf_document(source_id: str, file_path: str) -> ExtractedDocument:
-    """
-    Extracts text from a PDF file and returns an ExtractedDocument object.
-
-    Args:
-        source_id (str): The unique identifier of the source document.
-        file_path (str): The path to the PDF file to be extracted.
-
-    Returns:
-        ExtractedDocument: An object containing the extracted text and metadata.
-    """
     path = Path(file_path).expanduser().resolve()
-
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"PDF file not found at {path}")
-
-    content_type = SUPPORTED_TEXT_EXTENSIONS.get(path.suffix.lower())
-    if content_type is None:
+    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {path.suffix}")
 
-    raw_text, page_count, language = _get_text_from_pdf(path)
-    elements = _extract_elements(raw_text)
-    metadata = DocumentMetadata(extractedAt=_timestamp(), pageCount=page_count)
+    try:
+        elements, page_count, language = _extract_with_marker(path)
+    except Exception as exc:
+        _logger.warning("Marker extraction failed for %s; using PyMuPDF fallback: %s", path, exc)
+        elements, page_count, language = _extract_with_pymupdf(path)
 
     return ExtractedDocument(
         sourceId=source_id,
         title=path.stem,
         language=language,
-        contentType=content_type,
-        metadata=metadata,
+        contentType=ContentType.pdf,
+        metadata=DocumentMetadata(extractedAt=utc_timestamp(), pageCount=page_count),
         elements=elements,
     )
 
 
-# returns test and number of pages
-def _get_text_from_pdf(path: Path) -> tuple[str, int, str | None]:
-    """
-    Extracts text content and page count from a PDF file.
+def _extract_with_marker(path: Path) -> tuple[list[DocumentElement], int, str | None]:
+    options = {
+        "output_format": "json",
+        "force_ocr": False,
+        "ocr_all_pages": False,
+    }
+    config_parser = ConfigParser(options)
+    converter = PdfConverter(
+        artifact_dict=_get_model_dict(),
+        config=config_parser.generate_config_dict(),
+        renderer=config_parser.get_renderer(),
+        processor_list=config_parser.get_processors(),
+        llm_service=config_parser.get_llm_service(),
+    )
+    rendered = converter(str(path))
+    if not isinstance(rendered, JSONOutput):
+        raise TypeError(f"Expected Marker JSONOutput, received {type(rendered).__name__}")
 
-    This function attempts to extract text from the given PDF file.
-    If the primary extraction method fails, it falls back to a secondary,
-    faster extraction approach.
-
-    Args:
-        path: A Path object representing the location of the PDF file.
-        :type path: Path
-    Returns:
-        A tuple containing the extracted text as a string and the total number of pages in the PDF.
-        :rtype: tuple[str, int, str | None]
-    """
-    try:
-        return _get_md_from_pdf(path)
-    except Exception:
-        return _extract_with_pymupdf(path)  # faster fallback
-
-
-_model_dict: dict | None = None
+    elements = _marker_output_to_elements(rendered)
+    language = _first_language(rendered.metadata)
+    return elements, len(rendered.children), language
 
 
 def _get_model_dict() -> dict:
@@ -80,182 +87,103 @@ def _get_model_dict() -> dict:
     return _model_dict
 
 
-def _get_md_from_pdf(path: Path) -> tuple[str, int, str | None]:
-    """
-    Extracts text from a PDF file and returns it as Markdown.
+def _marker_output_to_elements(output: JSONOutput) -> list[DocumentElement]:
+    elements: list[DocumentElement] = []
+    for page_number, page_block in enumerate(output.children, start=1):
+        for block in page_block.children or []:
+            _append_marker_block(elements, block, page_number)
 
-    Args:
-        path (Path): The path to the PDF file.
+    if elements:
+        return elements
+    return [DocumentElement(type=ElementType.paragraph, content="", position=0)]
 
-    Returns:
-        tuple[str, int, str | None]: The extracted text as Markdown, the total number of pages in the PDF, and the suspected language.
-    """
-    converter = PdfConverter(
-        artifact_dict=_get_model_dict(),
-        config={
-            "output_format": "markdown",
-            "force_ocr": False,  # lets merker decide whether to use OCR
-            "ocr_all_pages": False
-        }
+
+def _append_marker_block(
+    elements: list[DocumentElement],
+    block: JSONBlockOutput,
+    page_number: int,
+) -> None:
+    if block.block_type in _SKIPPED_MARKER_BLOCK_TYPES:
+        return
+
+    element_type = _MARKER_ELEMENT_TYPES.get(block.block_type)
+    if element_type is None and block.children:
+        for child in block.children:
+            _append_marker_block(elements, child, page_number)
+        return
+    if element_type is None:
+        element_type = ElementType.paragraph
+
+    html = json_to_html(block)
+    content, level = _marker_block_content(block, html, element_type)
+    if not content and element_type != ElementType.image:
+        return
+
+    metadata = {
+        "bbox": block.bbox,
+        "polygon": block.polygon,
+        "markerBlockId": block.id,
+        "markerBlockType": block.block_type,
+    }
+    elements.append(
+        DocumentElement(
+            type=element_type,
+            content=content or "[Image]",
+            page=page_number,
+            level=level,
+            position=len(elements),
+            metadata=metadata,
+        )
     )
-    rendered = converter(str(path))
-    text, _, _ = text_from_rendered(rendered)
-    language = rendered.metadata.get("languages", [None])[0]
-
-    doc = fitz.open(str(path))
-    num_pages = doc.page_count
-    doc.close()
-    return text, num_pages, language if language is not None else None
 
 
-def _extract_with_pymupdf(path: Path) -> tuple[str, int, str | None]:
-    """
-    Extracts text from a PDF file using PyMuPDF.
+def _marker_block_content(
+    block: JSONBlockOutput,
+    html: str,
+    element_type: ElementType,
+) -> tuple[str, int | None]:
+    soup = BeautifulSoup(html, "html.parser")
+    if element_type == ElementType.heading:
+        heading = soup.find(["h1", "h2", "h3", "h4", "h5", "h6"])
+        level = int(heading.name[1]) if heading is not None else 2
+        return soup.get_text(" ", strip=True), level
+    if element_type in {ElementType.table, ElementType.list}:
+        return markdownify(html, heading_style="ATX").strip(), None
+    if element_type == ElementType.code:
+        return soup.get_text("\n", strip=True), None
+    if element_type == ElementType.image:
+        converted = markdownify(html, heading_style="ATX").strip()
+        if converted:
+            return converted, None
+        image_names = list((block.images or {}).keys())
+        if image_names:
+            return "\n".join(f"![Image]({name})" for name in image_names), None
+        return "[Image]", None
+    return soup.get_text(" ", strip=True), None
 
-    Args:
-        path (Path): The path to the PDF file.
 
-    Returns:
-        tuple[str, int, str | None]: The extracted text as Markdown, the total number of pages in the PDF, and the suspected language.
-    """
-    doc = fitz.open(str(path))
-    text = "\n\n".join(page.get_text("markdown") for page in doc)
-    page_count = doc.page_count
-    doc.close()
-    return text, page_count, None
+def _extract_with_pymupdf(path: Path) -> tuple[list[DocumentElement], int, str | None]:
+    elements: list[DocumentElement] = []
+    with fitz.open(str(path)) as document:
+        for page_number, page in enumerate(document, start=1):
+            page_text = page.get_text("text", sort=True)
+            page_elements = markdown_to_elements(
+                page_text,
+                page=page_number,
+                position_offset=len(elements),
+            )
+            elements.extend(page_elements)
+        return elements, document.page_count, None
 
 
 def _extract_elements(raw_text: str) -> list[DocumentElement]:
-    """
-    Parses Markdown-formatted text (as produced by marker) into typed DocumentElements.
-
-    Recognized patterns:
-    - Headings      : lines starting with one or more `#`
-    - Images        : Markdown image syntax ![alt](url)
-    - Code blocks   : fenced blocks ```...```
-    - Tables        : blocks whose first non-empty line starts with `|`
-    - Lists         : blocks whose lines start with `-`, `*`, `+` or a digit followed by `.`/`)`
-    - Paragraphs    : everything else
-    """
-    stripped = raw_text.strip()
-    if not stripped:
-        return [DocumentElement(type=ElementType.paragraph, content="", position=0)]
-
-    elements: list[DocumentElement] = []
-    position = 0
-
-    # Split on blank lines while preserving fenced code blocks
-    # We manually walk through to handle multi-line fenced blocks correctly
-    blocks: list[str] = []
-    current_lines: list[str] = []
-    in_fence = False
-
-    for line in stripped.splitlines():
-        if re.match(r"^```", line):
-            in_fence = not in_fence
-            current_lines.append(line)
-            if not in_fence:
-                # closing fence – end of code block
-                blocks.append("\n".join(current_lines))
-                current_lines = []
-        elif not in_fence and line.strip() == "":
-            if current_lines:
-                blocks.append("\n".join(current_lines))
-                current_lines = []
-        else:
-            current_lines.append(line)
-
-    if current_lines:
-        blocks.append("\n".join(current_lines))
-
-    image_pattern = re.compile(r"^!\[.*?\]\(.*?\)$")
-    list_line_pattern = re.compile(r"^(\s*([-*+]|\d+[.)]) )")
-
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
-
-        # --- Code block ---
-        if block.startswith("```"):
-            # Strip fences and optional language tag
-            inner = re.sub(r"^```[^\n]*\n?", "", block)
-            inner = re.sub(r"\n?```$", "", inner)
-            elements.append(
-                DocumentElement(
-                    type=ElementType.code,
-                    content=inner.strip(),
-                    position=position,
-                )
-            )
-            position += 1
-            continue
-
-        # --- Heading ---
-        if block.startswith("#"):
-            level = len(block) - len(block.lstrip("#"))
-            heading_text = block.lstrip("#").strip()
-            elements.append(
-                DocumentElement(
-                    type=ElementType.heading,
-                    content=heading_text or block,
-                    level=max(1, min(level, 6)),
-                    position=position,
-                )
-            )
-            position += 1
-            continue
-
-        # --- Image (single-line Markdown image) ---
-        if image_pattern.match(block):
-            elements.append(
-                DocumentElement(
-                    type=ElementType.image,
-                    content=block,
-                    position=position,
-                )
-            )
-            position += 1
-            continue
-
-        # --- Table (pipe-delimited) ---
-        first_line = block.splitlines()[0].strip()
-        if first_line.startswith("|"):
-            elements.append(
-                DocumentElement(
-                    type=ElementType.table,
-                    content=block,
-                    position=position,
-                )
-            )
-            position += 1
-            continue
-
-        # --- List ---
-        lines = block.splitlines()
-        if any(list_line_pattern.match(line) for line in lines):
-            elements.append(
-                DocumentElement(
-                    type=ElementType.list,
-                    content=block,
-                    position=position,
-                )
-            )
-        position += 1
-        continue
-
-        # --- Paragraph (fallback) ---
-        elements.append(
-            DocumentElement(
-                type=ElementType.paragraph,
-                content=block,
-                position=position,
-            )
-        )
-        position += 1
-
-    return elements
+    return markdown_to_elements(raw_text)
 
 
-def _timestamp() -> str:
-    return datetime.now(UTC).isoformat()
+def _first_language(metadata: dict) -> str | None:
+    languages = metadata.get("languages")
+    if isinstance(languages, list) and languages and isinstance(languages[0], str):
+        return languages[0]
+    if isinstance(languages, str):
+        return languages
+    return None

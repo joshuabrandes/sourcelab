@@ -1,9 +1,9 @@
 import re
-from datetime import UTC, datetime
 
 import httpx
 from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled, YouTubeTranscriptApi
 
+from sidecar.extractors.utils import utc_timestamp
 from sidecar.models import ContentType, DocumentElement, DocumentMetadata, ExtractedDocument, ElementType
 
 _VIDEO_ID_PATTERN = re.compile(
@@ -25,7 +25,7 @@ def extract_youtube_document(source_id: str, url: str) -> ExtractedDocument:
     elements = _transcript_to_elements(entries)
 
     metadata = DocumentMetadata(
-        extractedAt=_timestamp(),
+        extractedAt=utc_timestamp(),
         pageCount=1,
         author=channel,
         language=language,
@@ -112,7 +112,7 @@ def _build_segment_element(texts: list[str], start_seconds: float, position: int
         type=ElementType.paragraph,
         content=content,
         position=position,
-        metadata=None,
+        metadata={"startSeconds": start_seconds},
     )
 
 
@@ -121,7 +121,3 @@ def _format_timestamp(seconds: float) -> str:
     minutes, secs = divmod(total, 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
-
-
-def _timestamp() -> str:
-    return datetime.now(UTC).isoformat()

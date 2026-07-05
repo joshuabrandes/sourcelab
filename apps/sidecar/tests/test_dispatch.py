@@ -51,6 +51,20 @@ def test_dispatch_youtube_calls_youtube_extractor(mocker):
     mock.assert_called_once()
 
 
+@pytest.mark.parametrize("content_type", [ContentType.docx, ContentType.pptx])
+def test_dispatch_office_calls_office_extractor(content_type, mocker):
+    mock = mocker.patch("sidecar.main.extract_office_document", return_value=_dummy_doc())
+    request = ExtractFileRequest(
+        sourceId="src-1",
+        contentType=content_type,
+        filePath=f"/tmp/a.{content_type.value}",
+    )
+
+    _dispatch_extract(request)
+
+    mock.assert_called_once_with(source_id="src-1", file_path=f"/tmp/a.{content_type.value}")
+
+
 def test_dispatch_requires_file_path_for_file_types():
     request = ExtractFileRequest(sourceId="src-1", contentType=ContentType.pdf)
 

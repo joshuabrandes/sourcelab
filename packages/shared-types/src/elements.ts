@@ -10,6 +10,7 @@ export const ELEMENT_TYPES = [
 export const CONTENT_TYPES = [
     "pdf",
     "docx",
+    "pptx",
     "md",
     "txt",
     "html",
@@ -24,6 +25,9 @@ export type ContentType = (typeof CONTENT_TYPES)[number];
 export interface DocumentMetadata {
     author?: string;
     pageCount?: number;
+    imageWidth?: number;
+    imageHeight?: number;
+    language?: string;
     createdAt?: string;
     extractedAt: string;
 }
@@ -137,6 +141,18 @@ export function isExtractedDocument(value: unknown): value is ExtractedDocument 
     }
 
     if (value.metadata.pageCount !== undefined && typeof value.metadata.pageCount !== "number") {
+        return false;
+    }
+
+    if (value.metadata.imageWidth !== undefined && typeof value.metadata.imageWidth !== "number") {
+        return false;
+    }
+
+    if (value.metadata.imageHeight !== undefined && typeof value.metadata.imageHeight !== "number") {
+        return false;
+    }
+
+    if (value.metadata.language !== undefined && typeof value.metadata.language !== "string") {
         return false;
     }
 

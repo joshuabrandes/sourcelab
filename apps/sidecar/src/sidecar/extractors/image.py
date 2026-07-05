@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sidecar.extractors.utils import utc_timestamp
 from sidecar.models import ContentType, DocumentElement, DocumentMetadata, ExtractedDocument, ElementType
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"}
@@ -24,7 +24,7 @@ def extract_image_document(source_id: str, file_path: str) -> ExtractedDocument:
     image_size = _read_image_size(path)
 
     metadata = DocumentMetadata(
-        extractedAt=_timestamp(),
+        extractedAt=utc_timestamp(),
         pageCount=1,
         imageWidth=image_size[0],
         imageHeight=image_size[1],
@@ -40,7 +40,7 @@ def extract_image_document(source_id: str, file_path: str) -> ExtractedDocument:
     )
 
 
-def _get_surya_models() -> dict[str, Any] | None:
+def _get_surya_models() -> dict[str, Any]:
     global _surya_models
     if _surya_models is None:
         from surya.detection import DetectionPredictor
@@ -59,12 +59,12 @@ def _run_ocr(path: Path) -> list[dict]:
     from PIL import Image
 
     models = _get_surya_models()
-    image = Image.open(path).convert("RGB")
-
-    predictions = models["rec_predictor"](
-        [image],
-        det_predictor=models["det_predictor"],
-    )
+    with Image.open(path) as source_image:
+        image = source_image.convert("RGB")
+        predictions = models["rec_predictor"](
+            [image],
+            det_predictor=models["det_predictor"],
+        )
 
     if not predictions:
         return []
@@ -85,16 +85,16 @@ def _ocr_lines_to_elements(ocr_lines: list[dict]) -> list[DocumentElement]:
     groups = _group_lines_into_paragraphs(sorted_lines)
 
     elements: list[DocumentElement] = []
-    for position, group in enumerate(groups):
+    for group in groups:
         text = " ".join(line["text"] for line in group).strip()
         if not text:
             continue
 
         group_bbox = [
             min(l["bbox"][0] for l in group),
-            group[0]["bbox"][1],
+            min(l["bbox"][1] for l in group),
             max(l["bbox"][2] for l in group),
-            group[-1]["bbox"][3],
+            max(l["bbox"][3] for l in group),
         ]
         avg_line_height = sum(l["bbox"][3] - l["bbox"][1] for l in group) / len(group)
         is_short_and_tall = len(text) < 80 and avg_line_height > 28 and len(group) <= 2
@@ -105,8 +105,11 @@ def _ocr_lines_to_elements(ocr_lines: list[dict]) -> list[DocumentElement]:
                 type=element_type,
                 content=text,
                 level=1 if element_type == ElementType.heading else None,
-                position=position,
-                metadata=None, # {"bbox": group_bbox},
+                position=len(elements),
+                metadata={
+                    "bbox": group_bbox,
+                    "confidence": sum(line["confidence"] for line in group) / len(group),
+                },
             )
         )
 
@@ -125,7 +128,7 @@ def _group_lines_into_paragraphs(lines: list[dict]) -> list[list[dict]]:
         line_height = prev["bbox"][3] - prev["bbox"][1]
         vertical_gap = line["bbox"][1] - prev["bbox"][3]
 
-        if vertical_gap > line_height * 1.5:
+        if vertical_gap >= line_height * 1.5:
             groups.append([line])
         else:
             groups[-1].append(line)
@@ -137,7 +140,3 @@ def _read_image_size(path: Path) -> tuple[int, int]:
     from PIL import Image
     with Image.open(path) as img:
         return img.size
-
-
-def _timestamp() -> str:
-    return datetime.now(UTC).isoformat()

@@ -51,7 +51,7 @@ class DocumentMetadata(BaseModel):
     imageHeight: int | None = Field(default=None, ge=1)
     language: str | None = None
     createdAt: str | None = None
-    extractedAt: str | None = None
+    extractedAt: str
 
 
 class ExtractedDocument(BaseModel):

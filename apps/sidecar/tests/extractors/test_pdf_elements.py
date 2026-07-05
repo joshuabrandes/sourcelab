@@ -23,6 +23,13 @@ def test_whitespace_only_returns_single_empty_paragraph():
     assert elements[0].type == ElementType.paragraph
 
 
+def test_normal_paragraph_is_preserved():
+    elements = _extract_elements("A normal paragraph.")
+    assert len(elements) == 1
+    assert elements[0].type == ElementType.paragraph
+    assert elements[0].content == "A normal paragraph."
+
+
 # ── headings ─────────────────────────────────────────────────────────────────
 
 def test_heading_level_1():
@@ -132,3 +139,4 @@ def test_mixed_content_types():
     assert ElementType.heading in types
     assert ElementType.code in types
     assert ElementType.list in types
+    assert ElementType.paragraph in types
